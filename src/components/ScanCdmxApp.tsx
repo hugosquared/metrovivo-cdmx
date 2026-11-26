@@ -327,8 +327,8 @@ export default function ScanCdmxApp() {
     ]);
     setPhaseSnapFeedback(
       r.synced
-        ? `Fase sincronizada en Línea ${selectedStation.lineId} (${selectedStation.station.name}).`
-        : "Guardado en cola offline."
+        ? `¡Listo! Tren sincronizado saliendo de ${selectedStation.station.name} (Línea ${selectedStation.lineId}).`
+        : "Reporte guardado en cola offline."
     );
     if (r.synced) fetchLiveSnapshot();
     setTimeout(() => setPhaseSnapFeedback(null), 4000);
@@ -731,7 +731,7 @@ export default function ScanCdmxApp() {
                               )}
                               {st?.confidenceTier === 3 && (
                                 <div className="mt-0.5 text-[9px] font-semibold text-sky-400">
-                                  ● Fase anclada
+                                  ● Sincronizada en vivo
                                 </div>
                               )}
                             </div>
@@ -1119,11 +1119,11 @@ export default function ScanCdmxApp() {
             )}
           </div>
 
-          {/* Instant Live Phase Anchor right from Station Popup! */}
+          {/* Instant Live Train Sighting Sync right from Station Popup */}
           <div className="mt-3 border-t border-white/10 pt-2.5">
             <div className="mb-1.5 flex items-center gap-1 text-[10px] text-sky-300">
               <Radio className="h-3 w-3" />
-              <span>¿Estás en el andén? Ancla un tren real ahora:</span>
+              <span>¿Ves salir un tren ahorita? Sincroniza el mapa:</span>
             </div>
             <div className="grid grid-cols-2 gap-1.5">
               {([0, 1] as const).map((d) => {
@@ -1136,16 +1136,16 @@ export default function ScanCdmxApp() {
                   <button
                     key={d}
                     onClick={() => handleQuickStationPhaseSnap(d)}
-                    className="truncate rounded-lg border border-sky-400/30 bg-sky-500/15 px-2 py-1.5 text-[10px] font-semibold text-sky-200 hover:bg-sky-500/25"
+                    className="truncate rounded-lg border border-sky-400/30 bg-sky-500/15 px-2 py-1.5 text-[10px] font-semibold text-sky-200 hover:bg-sky-500/25 active:scale-[0.98]"
                   >
-                    Sale → {dir.headsign}
+                    Acaba de salir → {dir.headsign}
                   </button>
                 );
               })}
             </div>
             {phaseSnapFeedback && (
-              <div className="mt-2 flex items-center gap-1 text-[10px] text-emerald-300">
-                <CheckCircle2 className="h-3 w-3 shrink-0" />
+              <div className="mt-2 flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/15 p-2 text-[11px] font-medium text-emerald-200">
+                <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
                 <span>{phaseSnapFeedback}</span>
               </div>
             )}

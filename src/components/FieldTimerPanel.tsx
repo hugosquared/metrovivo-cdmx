@@ -87,6 +87,7 @@ export default function FieldTimerPanel({
   const [recentObs, setRecentObs] = useState<RecentObsRow[]>([]);
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [subTab, setSubTab] = useState<"crono" | "tabla">("crono");
+  const [sightingBtnState, setSightingBtnState] = useState<"idle" | "sending" | "done">("idle");
 
   const selectedLine = useMemo(
     () =>
@@ -291,8 +292,12 @@ export default function FieldTimerPanel({
   };
 
   const handlePhaseSightingOnly = async () => {
-    if (!currentOriginStation) return;
+    if (!currentOriginStation || sightingBtnState === "sending") return;
     vibrate(35);
+    setSightingBtnState("sending");
+    if (onFlyToStation) {
+      onFlyToStation(currentOriginStation.lon, currentOriginStation.lat);
+    }
     const r = await submitOrQueueMeasurements([
       {
         type: "platform_sighting",
@@ -305,11 +310,13 @@ export default function FieldTimerPanel({
       },
     ]);
     setQueuedCount(r.queuedCount);
+    setSightingBtnState("done");
+    window.setTimeout(() => setSightingBtnState("idle"), 4500);
     setStatusBanner({
       kind: "ok",
       text: r.synced
-        ? `Tren anclado saliendo de ${currentOriginStation.name} → ${dirTrack.headsign}.`
-        : `Avistamiento guardado en cola offline.`,
+        ? `¡Listo! Se sincronizó un tren en el mapa saliendo de ${currentOriginStation.name} → ${dirTrack.headsign} (activo por 30 min).`
+        : `Reporte de salida guardado en cola offline.`,
     });
     if (r.synced) onDataUpdated();
     refreshHistoryAndQueue();
@@ -626,10 +633,28 @@ export default function FieldTimerPanel({
             <button
               type="button"
               onClick={handlePhaseSightingOnly}
-              className="flex w-full items-center justify-center gap-2 rounded-lg border border-sky-400/30 bg-sky-500/15 px-3 py-2 text-xs font-medium text-sky-300 transition hover:bg-sky-500/25"
+              disabled={sightingBtnState === "sending"}
+              className={`flex w-full items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-semibold transition ${
+                sightingBtnState === "done"
+                  ? "border-emerald-400/60 bg-emerald-500/25 text-emerald-200"
+                  : sightingBtnState === "sending"
+                  ? "border-white/10 bg-zinc-800 text-zinc-400"
+                  : "border-sky-400/30 bg-sky-500/15 text-sky-300 hover:bg-sky-500/25 active:scale-[0.99]"
+              }`}
             >
-              <Radio className="h-3.5 w-3.5" />
-              Solo anclar tren saliendo ahora de {currentOriginStation?.name}
+              {sightingBtnState === "done" ? (
+                <>
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
+                  <span>¡Tren sincronizado saliendo de {currentOriginStation?.name}!</span>
+                </>
+              ) : sightingBtnState === "sending" ? (
+                <span>Sincronizando tren en el mapa...</span>
+              ) : (
+                <>
+                  <Radio className="h-3.5 w-3.5 shrink-0" />
+                  <span>Reportar: acaba de salir un tren de {currentOriginStation?.name}</span>
+                </>
+              )}
             </button>
 
             <form onSubmit={handleManualSave} className="flex gap-1.5 pt-1">
@@ -730,7 +755,7 @@ export default function FieldTimerPanel({
                       </span>
                       {o.obs_type === "platform_sighting" ? (
                         <span className="text-sky-300">
-                          Ancla ({o.observer_tag})
+                          Salida en vivo ({o.observer_tag})
                         </span>
                       ) : (
                         <span className="text-zinc-300">
