@@ -68,6 +68,15 @@ function classifyStatusRegime(
         headwayMultiplier: 1.0,
       };
     }
+    // Single station closed (e.g. Zócalo event): trains pass through at normal speed
+    if (combined.includes("estación temporalmente") || combined.includes("estacion temporalmente")) {
+      return {
+        regime: "REGULAR",
+        speedMultiplier: 1.0,
+        dwellMultiplier: 1.0,
+        headwayMultiplier: 1.0,
+      };
+    }
     return {
       regime: "PARTIAL_CLOSURE",
       speedMultiplier: 1.35,
@@ -270,7 +279,7 @@ async function doFetchOfficialStatus(): Promise<OfficialPollResult> {
     }
     return {
       connected: false,
-      updatedAtLabel: "Modo autónomo (BD local)",
+      updatedAtLabel: "Por franja horaria",
       fetchedAtIso: new Date().toISOString(),
       lines: {},
     };

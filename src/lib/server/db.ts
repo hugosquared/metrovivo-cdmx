@@ -270,19 +270,26 @@ export async function buildLiveSystemSnapshot(
         ? 2
         : 1;
 
-    const effectiveRegime: OperationalRegime = isLiveNow ? row.regime : "REGULAR";
+    // Expire stale official incidents if official feed hasn't refreshed in > 90 minutes (prevents yesterday's alerts staying stuck on cloud hosts)
+    const statusAgeMs = row.updated_at
+      ? nowMs - new Date(row.updated_at).getTime()
+      : Infinity;
+    const isFreshOfficial = official.connected || statusAgeMs < 90 * 60 * 1000;
+    const useLiveRow = isLiveNow && isFreshOfficial;
+
+    const effectiveRegime: OperationalRegime = useLiveRow ? row.regime : "REGULAR";
 
     linesState[lid] = {
       lineId: lid,
-      officialStatusText: isLiveNow
+      officialStatusText: useLiveRow
         ? row.official_status_text
-        : "Simulación horaria por franja",
-      affectedStationsRaw: isLiveNow ? row.affected_stations_raw : "Ninguna",
-      extraInfoRaw: isLiveNow ? row.extra_info_raw : "",
+        : "Servicio Regular",
+      affectedStationsRaw: useLiveRow ? row.affected_stations_raw : "Ninguna",
+      extraInfoRaw: useLiveRow ? row.extra_info_raw : "",
       regime: effectiveRegime,
-      speedMultiplier: isLiveNow ? Number(row.speed_multiplier) : 1.0,
-      dwellMultiplier: isLiveNow ? Number(row.dwell_multiplier) : 1.0,
-      headwayMultiplier: isLiveNow ? Number(row.headway_multiplier) : 1.0,
+      speedMultiplier: useLiveRow ? Number(row.speed_multiplier) : 1.0,
+      dwellMultiplier: useLiveRow ? Number(row.dwell_multiplier) : 1.0,
+      headwayMultiplier: useLiveRow ? Number(row.headway_multiplier) : 1.0,
       empiricalSlownessRatio: empRatio,
       confidenceTier,
       headwaySec: headwayMap.get(lid) ?? 180,

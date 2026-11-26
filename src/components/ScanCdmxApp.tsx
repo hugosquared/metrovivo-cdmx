@@ -596,7 +596,9 @@ export default function ScanCdmxApp() {
                           }`}
                         />
                         <span className="font-semibold text-zinc-200">
-                          Estado Oficial STC ({snapshot?.officialUpdatedAtLabel ?? "..."})
+                          {snapshot?.officialSourceConnected
+                            ? `Estado Oficial STC (${snapshot.officialUpdatedAtLabel})`
+                            : "Operación por franja horaria activa"}
                         </span>
                       </div>
                       <button
