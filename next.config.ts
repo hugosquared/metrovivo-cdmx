@@ -3,6 +3,9 @@ import path from "node:path";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  outputFileTracingIncludes: {
+    "/api/observations": ["./public/data/network-static.json"],
+  },
   webpack: (config, { isServer, dev }) => {
     if (isServer) {
       config.externals = config.externals || [];
