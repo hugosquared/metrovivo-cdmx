@@ -1,0 +1,10 @@
+{
+  "name": "MetroVivo CDMX — Mapa 3D en Vivo",
+  "short_name": "MetroVivo",
+  "description": "Mapa 3D ciudadano en vivo, motor cinemático y cronometrador colaborativo del Metro CDMX",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#07090E",
+  "theme_color": "#07090E",
+  "lang": "es-MX"
+}

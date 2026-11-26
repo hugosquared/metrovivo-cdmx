@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: #07090e;
+  color: #f4f4f5;
+}
+
+/* Subtle dark scrollbar for ScanCDMX panels */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* Clean MapLibre attribution styling on dark canvas */
+.maplibregl-ctrl-attrib {
+  background-color: rgba(9, 9, 11, 0.72) !important;
+  color: #71717a !important;
+  font-size: 10px !important;
+  backdrop-filter: blur(6px);
+  border-radius: 8px !important;
+}
+.maplibregl-ctrl-attrib a {
+  color: #a1a1aa !important;
+}

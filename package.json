@@ -1,0 +1,30 @@
+{
+  "name": "metrovivo-cdmx",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MetroVivo CDMX — Mapa 3D ciudadano y sin fines de lucro del Metro CDMX",
+  "scripts": {
+    "dev": "node --no-warnings ./node_modules/next/dist/bin/next dev",
+    "build": "node --no-warnings ./node_modules/next/dist/bin/next build",
+    "start": "node --no-warnings ./node_modules/next/dist/bin/next start",
+    "etl": "tsx scripts/build-metro-data.ts",
+    "db:push-turso": "tsx scripts/push-to-turso.ts"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.15.4",
+    "lucide-react": "^0.475.0",
+    "maplibre-gl": "^5.2.0",
+    "next": "^15.2.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.0.9",
+    "@types/node": "^22.13.5",
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "tailwindcss": "^4.0.9",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}
