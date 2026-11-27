@@ -80,6 +80,8 @@ export default function ScanCdmxApp() {
     useState<SelectedStationInfo | null>(null);
   const [pollDirId, setPollDirId] = useState<0 | 1>(0);
   const [phaseSnapFeedback, setPhaseSnapFeedback] = useState<string | null>(null);
+  const [trainPollFeedback, setTrainPollFeedback] = useState<string | null>(null);
+  const [showTrainPollManual, setShowTrainPollManual] = useState<boolean>(false);
 
   // Itinerary state
   const [originSlug, setOriginSlug] = useState<string>("tacubaya");
@@ -315,12 +317,34 @@ export default function ScanCdmxApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [network, snapshot, selectedStation, displayClock]);
 
-  const handleStationQuickPoll = async (
-    choice: "on_time" | "departed_now" | "delay_minor" | "delay_major"
+  // Auto-select the direction of the nearest upcoming arrival when opening a station card
+  useEffect(() => {
+    if (stationArrivals.length > 0) {
+      setPollDirId(stationArrivals[0].directionId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedStation?.station.stationId]);
+
+  const submitQuickPollVote = async (
+    lineId: LineId,
+    dirId: 0 | 1,
+    stationId: string,
+    stationName: string,
+    predEta: number | undefined,
+    choice: "on_time" | "departed_now" | "delay_minor" | "delay_major",
+    setFeedbackFn: (msg: string | null) => void
   ) => {
-    if (!selectedStation) return;
-    const nextInDir = stationArrivals.find((a) => a.directionId === pollDirId);
-    const predEta = nextInDir ? nextInDir.etaSec : undefined;
+    const msgMap = {
+      on_time: "✓ ¡Registrado! Confirmaste que va a tiempo.",
+      departed_now: `✓ ¡Registrado! Tren sincronizado saliendo de ${stationName}.`,
+      delay_minor: `✓ ¡Registrado! Demora normal (~3-5 min) en Línea ${lineId}.`,
+      delay_major: `✓ ¡Registrado! Retraso excesivo (+10 min) en Línea ${lineId}.`,
+    };
+
+    // Instant optimistic UI response (0 ms latency!)
+    setFeedbackFn(msgMap[choice]);
+    window.setTimeout(() => setFeedbackFn(null), 5000);
+
     const savedAlias =
       typeof window !== "undefined"
         ? window.localStorage.getItem("scancdmx_alias") ?? "anonimo"
@@ -336,27 +360,61 @@ export default function ScanCdmxApp() {
     const r = await submitOrQueueMeasurements([
       {
         type: typeMap[choice],
-        lineId: selectedStation.lineId,
-        directionId: pollDirId,
-        stationId: selectedStation.station.stationId,
+        lineId,
+        directionId: dirId,
+        stationId,
         predictedEtaSec: predEta,
         observedAtMs: Date.now(),
         observerTag: savedAlias,
       },
     ]);
 
-    const msgMap = {
-      on_time: "¡Gracias! Confirmaste que el paso va a tiempo.",
-      departed_now: `¡Listo! Tren sincronizado saliendo de ${selectedStation.station.name}.`,
-      delay_minor: `Registrada demora leve (~3-5 min) en Línea ${selectedStation.lineId}.`,
-      delay_major: `Registrada demora fuerte (+10 min) en Línea ${selectedStation.lineId}.`,
-    };
+    if (!r.synced) {
+      setFeedbackFn("✓ Guardado en memoria sin señal (se subirá al salir).");
+    } else {
+      fetchLiveSnapshot();
+    }
+  };
 
-    setPhaseSnapFeedback(
-      r.synced ? msgMap[choice] : "Respuesta guardada en cola offline."
+  const handleStationQuickPoll = (
+    choice: "on_time" | "departed_now" | "delay_minor" | "delay_major"
+  ) => {
+    if (!selectedStation) return;
+    const nextInDir = stationArrivals.find((a) => a.directionId === pollDirId);
+    submitQuickPollVote(
+      selectedStation.lineId,
+      pollDirId,
+      selectedStation.station.stationId,
+      selectedStation.station.name,
+      nextInDir?.etaSec,
+      choice,
+      setPhaseSnapFeedback
     );
-    if (r.synced) fetchLiveSnapshot();
-    setTimeout(() => setPhaseSnapFeedback(null), 4500);
+  };
+
+  const handleTrainQuickPoll = (
+    choice: "on_time" | "departed_now" | "delay_minor" | "delay_major"
+  ) => {
+    if (!selectedTrain || !network) return;
+    const ln = network.lines.find((l) => l.id === selectedTrain.lineId);
+    const dir = ln?.directions[String(selectedTrain.directionId) as "0" | "1"];
+    const targetName =
+      selectedTrain.state === "DWELLING"
+        ? selectedTrain.currentOrPrevStationName
+        : selectedTrain.nextStationName;
+    const stObj =
+      dir?.stations.find((s) => s.name === targetName) ?? dir?.stations[0];
+    if (!stObj) return;
+
+    submitQuickPollVote(
+      selectedTrain.lineId,
+      selectedTrain.directionId,
+      stObj.stationId,
+      stObj.name,
+      selectedTrain.nextStationEtaSec,
+      choice,
+      setTrainPollFeedback
+    );
   };
 
   if (loadingError) {
@@ -1082,6 +1140,86 @@ export default function ScanCdmxApp() {
               )}
             </button>
           </div>
+
+          {/* Smart Contextual Poll on Train Card: auto-opens when train arrives at platform (DWELLING), or expandable anytime! */}
+          {selectedTrain.state === "DWELLING" || showTrainPollManual ? (
+            <div className="mt-2.5 border-t border-white/10 pt-2.5">
+              <div className="mb-1.5 flex items-center justify-between text-[10px]">
+                <span className="font-semibold text-sky-300">
+                  {selectedTrain.state === "DWELLING"
+                    ? `En ${selectedTrain.currentOrPrevStationName}: ¿va a tiempo?`
+                    : `¿Cómo va este tren hacia ${selectedTrain.headsign}?`}
+                </span>
+                {selectedTrain.state !== "DWELLING" && (
+                  <button
+                    onClick={() => setShowTrainPollManual(false)}
+                    className="text-zinc-500 hover:text-zinc-300"
+                  >
+                    Ocultar
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  onClick={() => handleTrainQuickPoll("on_time")}
+                  className="flex flex-col items-start rounded-lg border border-emerald-400/30 bg-emerald-500/15 px-2 py-1.5 text-left hover:bg-emerald-500/25 active:scale-[0.98]"
+                >
+                  <span className="text-[10px] font-bold text-emerald-200">
+                    👍 Salió a tiempo
+                  </span>
+                  <span className="text-[9px] text-emerald-300/75">
+                    Coincide con el mapa
+                  </span>
+                </button>
+                <button
+                  onClick={() => handleTrainQuickPoll("departed_now")}
+                  className="flex flex-col items-start rounded-lg border border-sky-400/30 bg-sky-500/15 px-2 py-1.5 text-left hover:bg-sky-500/25 active:scale-[0.98]"
+                >
+                  <span className="text-[10px] font-bold text-sky-200">
+                    ⏱ Acaba de irse
+                  </span>
+                  <span className="text-[9px] text-sky-300/75">
+                    Sincronizar salida
+                  </span>
+                </button>
+                <button
+                  onClick={() => handleTrainQuickPoll("delay_minor")}
+                  className="flex flex-col items-start rounded-lg border border-amber-400/30 bg-amber-500/15 px-2 py-1.5 text-left hover:bg-amber-500/25 active:scale-[0.98]"
+                >
+                  <span className="text-[10px] font-bold text-amber-200">
+                    🟡 Retraso normal
+                  </span>
+                  <span className="text-[9px] text-amber-300/75">
+                    Tarda ~3–5 min más
+                  </span>
+                </button>
+                <button
+                  onClick={() => handleTrainQuickPoll("delay_major")}
+                  className="flex flex-col items-start rounded-lg border border-red-400/30 bg-red-500/15 px-2 py-1.5 text-left hover:bg-red-500/25 active:scale-[0.98]"
+                >
+                  <span className="text-[10px] font-bold text-red-200">
+                    🔴 Retraso excesivo
+                  </span>
+                  <span className="text-[9px] text-red-300/75">
+                    Detenido +10–15 min
+                  </span>
+                </button>
+              </div>
+              {trainPollFeedback && (
+                <div className="mt-2 flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/20 p-2 text-[11px] font-semibold text-emerald-200">
+                  <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
+                  <span>{trainPollFeedback}</span>
+                </div>
+              )}
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowTrainPollManual(true)}
+              className="mt-2 w-full rounded-lg border border-white/10 bg-zinc-900/70 py-1.5 text-[10px] font-medium text-zinc-300 hover:bg-zinc-800 hover:text-white"
+            >
+              ¿Vas en este tren? Reportar puntualidad o retraso
+            </button>
+          )}
         </div>
       )}
 
@@ -1188,31 +1326,47 @@ export default function ScanCdmxApp() {
             <div className="grid grid-cols-2 gap-1.5">
               <button
                 onClick={() => handleStationQuickPoll("on_time")}
-                className="rounded-lg border border-emerald-400/30 bg-emerald-500/15 px-2 py-1.5 text-[10px] font-semibold text-emerald-200 hover:bg-emerald-500/25 active:scale-[0.98]"
-                title="Confirmar que el tiempo estimado sí coincidió"
+                className="flex flex-col items-start rounded-lg border border-emerald-400/30 bg-emerald-500/15 px-2.5 py-1.5 text-left hover:bg-emerald-500/25 active:scale-[0.98]"
               >
-                👍 A tiempo
+                <span className="text-[11px] font-bold text-emerald-200">
+                  👍 Salió a tiempo
+                </span>
+                <span className="text-[9px] leading-tight text-emerald-300/80">
+                  Coincide con el mapa
+                </span>
               </button>
               <button
                 onClick={() => handleStationQuickPoll("departed_now")}
-                className="rounded-lg border border-sky-400/30 bg-sky-500/15 px-2 py-1.5 text-[10px] font-semibold text-sky-200 hover:bg-sky-500/25 active:scale-[0.98]"
-                title="Sincronizar que acaba de arrancar un tren ahorita"
+                className="flex flex-col items-start rounded-lg border border-sky-400/30 bg-sky-500/15 px-2.5 py-1.5 text-left hover:bg-sky-500/25 active:scale-[0.98]"
               >
-                ⏱ Salió ahorita
+                <span className="text-[11px] font-bold text-sky-200">
+                  ⏱ Acaba de irse
+                </span>
+                <span className="text-[9px] leading-tight text-sky-300/80">
+                  No alcancé / sincronizar
+                </span>
               </button>
               <button
                 onClick={() => handleStationQuickPoll("delay_minor")}
-                className="rounded-lg border border-amber-400/30 bg-amber-500/15 px-2 py-1.5 text-[10px] font-semibold text-amber-200 hover:bg-amber-500/25 active:scale-[0.98]"
-                title="Tarda unos 3 a 5 minutos más de lo normal"
+                className="flex flex-col items-start rounded-lg border border-amber-400/30 bg-amber-500/15 px-2.5 py-1.5 text-left hover:bg-amber-500/25 active:scale-[0.98]"
               >
-                🟡 +3–5 min
+                <span className="text-[11px] font-bold text-amber-200">
+                  🟡 Retraso normal
+                </span>
+                <span className="text-[9px] leading-tight text-amber-300/80">
+                  Tarda ~3 a 5 min más
+                </span>
               </button>
               <button
                 onClick={() => handleStationQuickPoll("delay_major")}
-                className="rounded-lg border border-red-400/30 bg-red-500/15 px-2 py-1.5 text-[10px] font-semibold text-red-200 hover:bg-red-500/25 active:scale-[0.98]"
-                title="Línea detenida o tardando más de 10 minutos"
+                className="flex flex-col items-start rounded-lg border border-red-400/30 bg-red-500/15 px-2.5 py-1.5 text-left hover:bg-red-500/25 active:scale-[0.98]"
               >
-                🔴 +10–15 min
+                <span className="text-[11px] font-bold text-red-200">
+                  🔴 Retraso excesivo
+                </span>
+                <span className="text-[9px] leading-tight text-red-300/80">
+                  Detenido +10–15 min
+                </span>
               </button>
             </div>
 

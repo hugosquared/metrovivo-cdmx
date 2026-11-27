@@ -21,9 +21,11 @@ export interface OfficialPollResult {
 const INCIDENTES_URL =
   "https://incidentesmovilidad.cdmx.gob.mx/public/bandejaEstadoServicio.xhtml?idMedioTransporte=stc";
 
-const CACHE_TTL_MS = 90_000; // Single-flight 90s server cache to protect CDMX gov server
+const CACHE_TTL_MS = 90_000; // Single-flight 90s server cache when reachable
+const FAILURE_BACKOFF_MS = 600_000; // 10 min backoff when .gob.mx blocks datacenter IP
 let cachedResult: OfficialPollResult | null = null;
 let lastFetchMs = 0;
+let lastFailedMs = 0;
 let inflightPromise: Promise<OfficialPollResult> | null = null;
 
 function decodeHtmlEntities(str: string): string {
@@ -182,7 +184,7 @@ function parseTableRowsIntoMap(
 
 async function doFetchOfficialStatus(): Promise<OfficialPollResult> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 7500);
+  const timer = setTimeout(() => controller.abort(), 2200);
 
   try {
     const res1 = await fetch(INCIDENTES_URL, {
@@ -272,17 +274,22 @@ async function doFetchOfficialStatus(): Promise<OfficialPollResult> {
     };
     cachedResult = result;
     lastFetchMs = Date.now();
+    lastFailedMs = 0;
     return result;
   } catch {
+    lastFailedMs = Date.now();
     if (cachedResult) {
       return { ...cachedResult, connected: false };
     }
-    return {
+    const fallback: OfficialPollResult = {
       connected: false,
       updatedAtLabel: "Por franja horaria",
       fetchedAtIso: new Date().toISOString(),
       lines: {},
     };
+    cachedResult = fallback;
+    lastFetchMs = Date.now();
+    return fallback;
   } finally {
     clearTimeout(timer);
   }
@@ -292,6 +299,14 @@ export async function pollOfficialMetroStatus(
   forceRefresh: boolean = false
 ): Promise<OfficialPollResult> {
   const now = Date.now();
+  if (
+    !forceRefresh &&
+    lastFailedMs > 0 &&
+    cachedResult &&
+    now - lastFailedMs < FAILURE_BACKOFF_MS
+  ) {
+    return cachedResult;
+  }
   if (!forceRefresh && cachedResult && now - lastFetchMs < CACHE_TTL_MS) {
     return cachedResult;
   }

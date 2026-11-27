@@ -385,7 +385,6 @@ export async function recordEmpiricalMeasurements(
 }> {
   const db = await getDbAdapter();
   const network = getStaticNetworkServer();
-  const snapshot = await buildLiveSystemSnapshot();
 
   const isTrustedAdmin =
     Boolean(process.env.ADMIN_PIN?.trim()) &&
@@ -599,8 +598,7 @@ export async function recordEmpiricalMeasurements(
       processed++;
     } else if (item.type === "platform_sighting" && item.stationId) {
       const line = network.lines.find((l) => l.id === item.lineId);
-      const lineState = snapshot.lines[item.lineId];
-      if (line && lineState) {
+      if (line) {
         const dirKey = String(item.directionId) as "0" | "1";
         const dir = line.directions[dirKey];
         const stIdx = dir.stations.findIndex(
@@ -608,26 +606,48 @@ export async function recordEmpiricalMeasurements(
         );
 
         if (stIdx >= 0) {
+          // Fast targeted query (only this line's segments & headway, <20ms, zero .gob.mx wait!)
+          const prefix = `L${item.lineId}-D${item.directionId}-%`;
+          const [segTimings, hwRow] = await Promise.all([
+            db.all<{
+              segment_id: string;
+              run_time_sec: number;
+              dwell_origin_sec: number;
+            }>(
+              `SELECT segment_id, run_time_sec, dwell_origin_sec
+               FROM segment_travel_profiles
+               WHERE segment_id LIKE ? AND day_type = ? AND time_band_id = ?`,
+              [prefix, cdmx.dayType, band.id]
+            ),
+            db.get<{ headway_sec: number }>(
+              `SELECT headway_sec FROM headway_profiles WHERE line_id = ? AND day_type = ? AND time_band_id = ?`,
+              [item.lineId, cdmx.dayType, band.id]
+            ),
+          ]);
+
+          const tMap = new Map(
+            segTimings.map((s) => [
+              s.segment_id,
+              {
+                run: Number(s.run_time_sec),
+                dwell: Number(s.dwell_origin_sec),
+              },
+            ])
+          );
+
           let departOffsetFromTerminalSec = 0;
           for (let i = 0; i <= stIdx; i++) {
             const seg = i < dir.segments.length ? dir.segments[i] : null;
-            const timing = seg ? snapshot.timings[seg.id] : undefined;
-            const dwell = Math.round(
-              (timing ? timing.dwellAtOriginSec : 20) * lineState.dwellMultiplier
-            );
+            const timing = seg ? tMap.get(seg.id) : undefined;
+            const dwell = Math.round(timing ? timing.dwell : 20);
             departOffsetFromTerminalSec += dwell;
             if (i < stIdx && seg) {
-              const run = Math.round(
-                (timing ? timing.runTimeSec : 80) * lineState.speedMultiplier
-              );
+              const run = Math.round(timing ? timing.run : 80);
               departOffsetFromTerminalSec += run;
             }
           }
 
-          const headwaySec = Math.max(
-            95,
-            Math.round(lineState.headwaySec * lineState.headwayMultiplier)
-          );
+          const headwaySec = Math.max(95, Number(hwRow?.headway_sec ?? 180));
           const serviceStartSec = getServiceStartSec(cdmx.dayType);
           const seedOffset =
             ((line.id.charCodeAt(0) * 37 + item.directionId * 53) % headwaySec) *
