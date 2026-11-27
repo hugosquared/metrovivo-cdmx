@@ -4,6 +4,7 @@ import path from "node:path";
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   outputFileTracingIncludes: {
+    "/api/live": ["./public/data/network-static.json"],
     "/api/observations": ["./public/data/network-static.json"],
   },
   webpack: (config, { isServer, dev }) => {

@@ -743,9 +743,38 @@ async function main() {
       );
       if (!trip) continue;
 
+      const stRows = stopTimesByTrip.get(trip.trip_id) ?? [];
       const rawShape = (shapesByShapeId.get(trip.shape_id) ?? []).map(
         (p) => [p[0], p[1]] as [number, number]
       );
+
+      // Fix SEMOVI GTFS bug where some direction shapes (specifically Línea 9 B_SH0200L9000_1) are stored backwards!
+      if (stRows.length >= 2 && rawShape.length >= 2) {
+        const firstStop = stopsById.get(stRows[0].stop_id)!;
+        const firstLon = Number(firstStop.stop_lon);
+        const firstLat = Number(firstStop.stop_lat);
+        const dToStart = distMeters(
+          firstLon,
+          firstLat,
+          rawShape[0][0],
+          rawShape[0][1]
+        );
+        const dToEnd = distMeters(
+          firstLon,
+          firstLat,
+          rawShape[rawShape.length - 1][0],
+          rawShape[rawShape.length - 1][1]
+        );
+        if (dToEnd < dToStart) {
+          console.log(
+            `[GTFS Shape Fix] Reversed inverted shape ${trip.shape_id} for Línea ${lineId} dir ${dirNum} (dStart=${Math.round(
+              dToStart
+            )}m vs dEnd=${Math.round(dToEnd)}m)`
+          );
+          rawShape.reverse();
+        }
+      }
+
       // Offset +2.2m to the right of travel direction -> 4.4m parallel dual tracks!
       const offsetPts = smoothAndOffsetTrack(rawShape, 2.2);
 
@@ -764,7 +793,6 @@ async function main() {
       const totalLengthM = Number(cumDist[cumDist.length - 1].toFixed(1));
 
       // Project stations cleanly onto offset track in monotonic sequence
-      const stRows = stopTimesByTrip.get(trip.trip_id) ?? [];
       const stations: StationStopOnDirection[] = [];
       let prevDistM = 0;
 
@@ -966,12 +994,18 @@ async function main() {
     `Wrote ${STATIC_JSON_PATH} (${jsonKb} KB) with ${linesStatic.length} lines.`
   );
 
-  // Initialize & seed SQLite database
-  if (fs.existsSync(DB_PATH)) fs.unlinkSync(DB_PATH);
+  // Initialize & seed SQLite database (using DROP TABLE instead of unlink so Windows open handles don't EBUSY)
   const db = new DatabaseSync(DB_PATH);
   db.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
+
+    DROP TABLE IF EXISTS empirical_observations;
+    DROP TABLE IF EXISTS live_line_status;
+    DROP TABLE IF EXISTS headway_profiles;
+    DROP TABLE IF EXISTS segment_travel_profiles;
+    DROP TABLE IF EXISTS segments;
+    DROP TABLE IF EXISTS lines;
 
     CREATE TABLE lines (
       id TEXT PRIMARY KEY,

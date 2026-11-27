@@ -40,6 +40,8 @@ declare global {
   var __scancdmxAdapter: AsyncDbAdapter | undefined;
   // eslint-disable-next-line no-var
   var __scancdmxNetwork: NetworkStaticBundle | undefined;
+  // eslint-disable-next-line no-var
+  var __scancdmxL9Healed: boolean | undefined;
 }
 
 async function getDbAdapter(): Promise<AsyncDbAdapter> {
@@ -108,11 +110,72 @@ function sanitizeObserverTag(raw?: string): string {
   return cleaned || "anonimo";
 }
 
+/**
+ * One-time non-destructive migration: fixes Line 9 Direction 1 segment lengths & base run times
+ * in Turso / SQLite (caused by SEMOVI's inverted B_SH0200L9000_1 GTFS shape) while keeping all user observations intact.
+ */
+async function ensureLine9SegmentsHealed(db: AsyncDbAdapter): Promise<void> {
+  if (globalThis.__scancdmxL9Healed) return;
+  globalThis.__scancdmxL9Healed = true;
+
+  const check = await db.get<{ length_m: number }>(
+    `SELECT length_m FROM segments WHERE id = 'L9-D1-S01'`
+  );
+  if (!check || Number(check.length_m) < 5000) return;
+
+  const net = getStaticNetworkServer();
+  const l9 = net.lines.find((l) => l.id === "9");
+  if (!l9) return;
+
+  const nowIso = new Date().toISOString();
+  for (const seg of l9.directions["1"].segments) {
+    await db.run(
+      `UPDATE segments SET length_m = ?, min_curve_radius_m = ? WHERE id = ?`,
+      [seg.lengthM, seg.minCurveRadiusM, seg.id]
+    );
+
+    // Compute calibrated run time matching Line 9 pneumatic specs (74 km/h max, 1.22/1.32 m/s^2)
+    const curveCapMps = Math.sqrt(0.95 * seg.minCurveRadiusM);
+    const vTarget = Math.min((74 / 3.6) * 0.88, curveCapMps);
+    const tAcc = vTarget / 1.22;
+    const tDec = vTarget / 1.32;
+    const dAccDec = 0.5 * vTarget * (tAcc + tDec);
+    const basePhysSec = Math.round(
+      Math.max(32, tAcc + tDec + Math.max(0, seg.lengthM - dAccDec) / vTarget + 6)
+    );
+
+    await db.run(
+      `
+      UPDATE segment_travel_profiles
+      SET run_time_sec = CASE
+            WHEN time_band_id IN ('B2_PICO_AM', 'B6_PICO_PM') THEN ROUND(? * 1.06)
+            ELSE ?
+          END,
+          base_physics_sec = ?,
+          p85_run_time_sec = ROUND(? * 1.18),
+          rain_run_time_sec = ROUND(? * 1.45),
+          updated_at = ?
+      WHERE segment_id = ? AND sample_count = 0
+    `,
+      [
+        basePhysSec,
+        basePhysSec,
+        basePhysSec,
+        basePhysSec,
+        basePhysSec,
+        nowIso,
+        seg.id,
+      ]
+    );
+  }
+}
+
 export async function buildLiveSystemSnapshot(
   referenceTimestampMs?: number,
   forceOfficialRefresh: boolean = false
 ): Promise<LiveSystemSnapshot> {
   const db = await getDbAdapter();
+  await ensureLine9SegmentsHealed(db);
   const nowMs = Date.now();
   const targetMs = referenceTimestampMs ?? nowMs;
   const isLiveNow = Math.abs(targetMs - nowMs) < 5 * 60 * 1000;
