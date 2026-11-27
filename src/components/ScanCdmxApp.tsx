@@ -165,11 +165,16 @@ export default function ScanCdmxApp() {
       }
     })();
 
+    // Poll every 2 minutes ONLY when browser tab is visible in foreground (saves ~98% serverless credits!)
     const pollId = window.setInterval(() => {
-      if (isLiveRef.current) {
+      if (
+        isLiveRef.current &&
+        typeof document !== "undefined" &&
+        document.visibilityState === "visible"
+      ) {
         fetchLiveSnapshot();
       }
-    }, 30_000);
+    }, 120_000);
 
     return () => {
       mounted = false;
@@ -331,14 +336,13 @@ export default function ScanCdmxApp() {
     stationId: string,
     stationName: string,
     predEta: number | undefined,
-    choice: "on_time" | "departed_now" | "delay_minor" | "delay_major",
+    choice: "on_time" | "departed_now" | "delay_major",
     setFeedbackFn: (msg: string | null) => void
   ) => {
     const msgMap = {
-      on_time: "✓ ¡Registrado! Confirmaste que va a tiempo.",
-      departed_now: `✓ ¡Registrado! Tren sincronizado saliendo de ${stationName}.`,
-      delay_minor: `✓ ¡Registrado! Demora normal (~3-5 min) en Línea ${lineId}.`,
-      delay_major: `✓ ¡Registrado! Retraso excesivo (+10 min) en Línea ${lineId}.`,
+      on_time: "✓ ¡Registrado! Confirmaste que salió a tiempo.",
+      departed_now: `✓ ¡Registrado! Se marcó el tren saliendo de ${stationName}.`,
+      delay_major: `✓ ¡Registrado! Reporte de demora (+15 min) en Línea ${lineId}.`,
     };
 
     // Instant optimistic UI response (0 ms latency!)
@@ -353,7 +357,6 @@ export default function ScanCdmxApp() {
     const typeMap = {
       on_time: "accuracy_confirm" as const,
       departed_now: "platform_sighting" as const,
-      delay_minor: "crowd_delay_minor" as const,
       delay_major: "crowd_delay_major" as const,
     };
 
@@ -377,7 +380,7 @@ export default function ScanCdmxApp() {
   };
 
   const handleStationQuickPoll = (
-    choice: "on_time" | "departed_now" | "delay_minor" | "delay_major"
+    choice: "on_time" | "departed_now" | "delay_major"
   ) => {
     if (!selectedStation) return;
     const nextInDir = stationArrivals.find((a) => a.directionId === pollDirId);
@@ -393,7 +396,7 @@ export default function ScanCdmxApp() {
   };
 
   const handleTrainQuickPoll = (
-    choice: "on_time" | "departed_now" | "delay_minor" | "delay_major"
+    choice: "on_time" | "departed_now" | "delay_major"
   ) => {
     if (!selectedTrain || !network) return;
     const ln = network.lines.find((l) => l.id === selectedTrain.lineId);
@@ -730,11 +733,14 @@ export default function ScanCdmxApp() {
                       const st = snapshot?.lines[line.id];
                       const active = enabledLines.has(line.id);
                       const isRain = st?.regime === "RAIN_SLOW";
-                      const isMildCrowdOrDelay = st?.regime === "HIGH_CROWD";
-                      const isBad =
-                        st?.regime === "DELAYED" ||
-                        st?.regime === "PARTIAL_CLOSURE" ||
-                        st?.regime === "SUSPENDED";
+                      const isUserReportedDelay =
+                        st?.regime === "DELAYED" &&
+                        Boolean(st?.officialStatusText.includes("(usuarios)"));
+                      const isOfficialIncident =
+                        (st?.regime === "DELAYED" ||
+                          st?.regime === "PARTIAL_CLOSURE" ||
+                          st?.regime === "SUSPENDED") &&
+                        !isUserReportedDelay;
                       const isSlowEmpirical =
                         (st?.empiricalSlownessRatio ?? 1) > 1.15;
 
@@ -794,24 +800,38 @@ export default function ScanCdmxApp() {
                               </div>
                             </div>
 
-                            {/* Status Badge */}
+                            {/* Status Badge: clearly distinguishes Official STC vs User Reports */}
                             <div className="shrink-0 text-right">
                               {isRain ? (
-                                <span className="inline-flex items-center gap-1 rounded-md bg-sky-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-sky-300">
-                                  <CloudRain className="h-3 w-3" />
-                                  Lluvia (-31%)
-                                </span>
-                              ) : isBad ? (
-                                <span className="inline-flex items-center gap-1 rounded-md bg-red-500/25 px-1.5 py-0.5 text-[10px] font-semibold text-red-300">
-                                  <AlertTriangle className="h-3 w-3" />
-                                  {st?.officialStatusText.includes("+10m")
-                                    ? "Demora +10m"
-                                    : "Incidente"}
-                                </span>
-                              ) : isMildCrowdOrDelay ? (
-                                <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300">
-                                  Demora ~3-5m
-                                </span>
+                                <div>
+                                  <span className="inline-flex items-center gap-1 rounded-md bg-sky-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-sky-300">
+                                    <CloudRain className="h-3 w-3" />
+                                    Lluvia
+                                  </span>
+                                  <div className="mt-0.5 text-[9px] text-sky-400/80">
+                                    Informe oficial
+                                  </div>
+                                </div>
+                              ) : isOfficialIncident ? (
+                                <div>
+                                  <span className="inline-flex items-center gap-1 rounded-md bg-red-500/25 px-1.5 py-0.5 text-[10px] font-semibold text-red-300">
+                                    <AlertTriangle className="h-3 w-3" />
+                                    Incidente
+                                  </span>
+                                  <div className="mt-0.5 text-[9px] text-red-300/80">
+                                    Informe oficial
+                                  </div>
+                                </div>
+                              ) : isUserReportedDelay ? (
+                                <div>
+                                  <span className="inline-flex items-center gap-1 rounded-md border border-orange-400/40 bg-orange-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-orange-200">
+                                    <AlertTriangle className="h-3 w-3 text-orange-300" />
+                                    Demora +15m
+                                  </span>
+                                  <div className="mt-0.5 text-[9px] text-orange-300/85">
+                                    Por usuarios
+                                  </div>
+                                </div>
                               ) : isSlowEmpirical ? (
                                 <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300">
                                   Lenta (×{st?.empiricalSlownessRatio})
@@ -1162,46 +1182,35 @@ export default function ScanCdmxApp() {
               <div className="grid grid-cols-2 gap-1.5">
                 <button
                   onClick={() => handleTrainQuickPoll("on_time")}
-                  className="flex flex-col items-start rounded-lg border border-emerald-400/30 bg-emerald-500/15 px-2 py-1.5 text-left hover:bg-emerald-500/25 active:scale-[0.98]"
+                  className="flex flex-col items-start rounded-lg border border-emerald-400/30 bg-emerald-500/15 px-2.5 py-1.5 text-left hover:bg-emerald-500/25 active:scale-[0.98]"
                 >
                   <span className="text-[10px] font-bold text-emerald-200">
                     👍 Salió a tiempo
                   </span>
-                  <span className="text-[9px] text-emerald-300/75">
+                  <span className="text-[9px] text-emerald-300/80">
                     Coincide con el mapa
                   </span>
                 </button>
                 <button
                   onClick={() => handleTrainQuickPoll("departed_now")}
-                  className="flex flex-col items-start rounded-lg border border-sky-400/30 bg-sky-500/15 px-2 py-1.5 text-left hover:bg-sky-500/25 active:scale-[0.98]"
+                  className="flex flex-col items-start rounded-lg border border-sky-400/30 bg-sky-500/15 px-2.5 py-1.5 text-left hover:bg-sky-500/25 active:scale-[0.98]"
                 >
                   <span className="text-[10px] font-bold text-sky-200">
                     ⏱ Acaba de irse
                   </span>
-                  <span className="text-[9px] text-sky-300/75">
-                    Sincronizar salida
-                  </span>
-                </button>
-                <button
-                  onClick={() => handleTrainQuickPoll("delay_minor")}
-                  className="flex flex-col items-start rounded-lg border border-amber-400/30 bg-amber-500/15 px-2 py-1.5 text-left hover:bg-amber-500/25 active:scale-[0.98]"
-                >
-                  <span className="text-[10px] font-bold text-amber-200">
-                    🟡 Retraso normal
-                  </span>
-                  <span className="text-[9px] text-amber-300/75">
-                    Tarda ~3–5 min más
+                  <span className="text-[9px] text-sky-300/80">
+                    No alcancé a subir
                   </span>
                 </button>
                 <button
                   onClick={() => handleTrainQuickPoll("delay_major")}
-                  className="flex flex-col items-start rounded-lg border border-red-400/30 bg-red-500/15 px-2 py-1.5 text-left hover:bg-red-500/25 active:scale-[0.98]"
+                  className="col-span-2 flex items-center justify-between rounded-lg border border-red-400/30 bg-red-500/15 px-2.5 py-1.5 text-left hover:bg-red-500/25 active:scale-[0.98]"
                 >
                   <span className="text-[10px] font-bold text-red-200">
-                    🔴 Retraso excesivo
+                    🔴 Demora excesiva
                   </span>
-                  <span className="text-[9px] text-red-300/75">
-                    Detenido +10–15 min
+                  <span className="text-[9px] text-red-300/80">
+                    Detenido +15 min
                   </span>
                 </button>
               </div>
@@ -1291,11 +1300,11 @@ export default function ScanCdmxApp() {
             )}
           </div>
 
-          {/* 1-Click Station Accuracy & Live Sync Poll */}
+          {/* 1-Click Station 3-Button Poll */}
           <div className="mt-3 border-t border-white/10 pt-2.5">
-            <div className="mb-1.5 flex items-center justify-between text-[10px]">
-              <span className="font-semibold text-sky-300">
-                ¿Tu metro pasó a la hora estimada?
+            <div className="mb-1 flex items-center justify-between text-[10px]">
+              <span className="font-semibold uppercase tracking-wider text-zinc-400">
+                Dirección
               </span>
             </div>
 
@@ -1343,29 +1352,18 @@ export default function ScanCdmxApp() {
                   ⏱ Acaba de irse
                 </span>
                 <span className="text-[9px] leading-tight text-sky-300/80">
-                  No alcancé / sincronizar
-                </span>
-              </button>
-              <button
-                onClick={() => handleStationQuickPoll("delay_minor")}
-                className="flex flex-col items-start rounded-lg border border-amber-400/30 bg-amber-500/15 px-2.5 py-1.5 text-left hover:bg-amber-500/25 active:scale-[0.98]"
-              >
-                <span className="text-[11px] font-bold text-amber-200">
-                  🟡 Retraso normal
-                </span>
-                <span className="text-[9px] leading-tight text-amber-300/80">
-                  Tarda ~3 a 5 min más
+                  No alcancé a subir
                 </span>
               </button>
               <button
                 onClick={() => handleStationQuickPoll("delay_major")}
-                className="flex flex-col items-start rounded-lg border border-red-400/30 bg-red-500/15 px-2.5 py-1.5 text-left hover:bg-red-500/25 active:scale-[0.98]"
+                className="col-span-2 flex items-center justify-between rounded-lg border border-red-400/30 bg-red-500/15 px-2.5 py-2 text-left hover:bg-red-500/25 active:scale-[0.98]"
               >
                 <span className="text-[11px] font-bold text-red-200">
-                  🔴 Retraso excesivo
+                  🔴 Demora excesiva
                 </span>
-                <span className="text-[9px] leading-tight text-red-300/80">
-                  Detenido +10–15 min
+                <span className="text-[9px] leading-tight text-red-300/85">
+                  Detenido +15 min
                 </span>
               </button>
             </div>

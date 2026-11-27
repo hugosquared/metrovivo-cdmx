@@ -243,11 +243,13 @@ export async function buildLiveSystemSnapshot(
     `,
       [cutoffIso]
     ),
-    db.all<{ line_id: string; obs_type: string; cnt: number }>(
+    db.all<{ line_id: string; obs_type: string; unique_voters: number }>(
       `
-      SELECT line_id, obs_type, COUNT(*) AS cnt
+      SELECT line_id,
+             obs_type,
+             COUNT(DISTINCT COALESCE(notes, CAST(id AS TEXT))) AS unique_voters
       FROM empirical_observations
-      WHERE obs_type IN ('accuracy_confirm', 'crowd_delay_minor', 'crowd_delay_major')
+      WHERE obs_type IN ('accuracy_confirm', 'crowd_delay_major')
         AND recorded_at >= ?
       GROUP BY line_id, obs_type
     `,
@@ -264,17 +266,15 @@ export async function buildLiveSystemSnapshot(
 
   const pollStatsByLine = new Map<
     string,
-    { onTime: number; minor: number; major: number }
+    { onTime: number; major: number }
   >();
   for (const pv of recentPollVotes) {
     const cur = pollStatsByLine.get(pv.line_id) ?? {
       onTime: 0,
-      minor: 0,
       major: 0,
     };
-    const c = Number(pv.cnt);
+    const c = Number(pv.unique_voters);
     if (pv.obs_type === "accuracy_confirm") cur.onTime += c;
-    else if (pv.obs_type === "crowd_delay_minor") cur.minor += c;
     else if (pv.obs_type === "crowd_delay_major") cur.major += c;
     pollStatsByLine.set(pv.line_id, cur);
   }
@@ -307,8 +307,8 @@ export async function buildLiveSystemSnapshot(
     const isFreshOfficial = official.connected || statusAgeMs < 90 * 60 * 1000;
     const useLiveRow = isLiveNow && isFreshOfficial;
     const poll = isLiveNow
-      ? pollStatsByLine.get(lid) ?? { onTime: 0, minor: 0, major: 0 }
-      : { onTime: 0, minor: 0, major: 0 };
+      ? pollStatsByLine.get(lid) ?? { onTime: 0, major: 0 }
+      : { onTime: 0, major: 0 };
 
     let effectiveRegime: OperationalRegime = useLiveRow ? row.regime : "REGULAR";
     let statusText = useLiveRow ? row.official_status_text : "Servicio Regular";
@@ -317,23 +317,13 @@ export async function buildLiveSystemSnapshot(
     let headwayMult = useLiveRow ? Number(row.headway_multiplier) : 1.0;
 
     if (effectiveRegime === "REGULAR") {
+      // Only trigger alert on excessive stoppage (+15 min) confirmed by >= 3 DISTINCT IPs!
       if (poll.major >= 3 && poll.major > poll.onTime) {
-        // Severe stoppage (+10-15 min) confirmed by >= 3 commuters
         effectiveRegime = "DELAYED";
-        statusText = "Demora +10m (usuarios)";
-        speedMult = 1.5;
-        dwellMult = 1.4;
+        statusText = "Demora +15m (usuarios)";
+        speedMult = 1.55;
+        dwellMult = 1.45;
         headwayMult = 1.35;
-      } else if (
-        poll.minor + poll.major * 2 >= 3 &&
-        poll.minor + poll.major >= poll.onTime
-      ) {
-        // Mild slowdown (+3-5 min): gentle amber adjustment, NOT red incident
-        effectiveRegime = "HIGH_CROWD";
-        statusText = "Demora ~3-5m (usuarios)";
-        speedMult = 1.18;
-        dwellMult = 1.2;
-        headwayMult = 1.15;
       }
     }
 
@@ -375,7 +365,8 @@ export async function buildLiveSystemSnapshot(
 
 export async function recordEmpiricalMeasurements(
   inputs: EmpiricalMeasurementInput[],
-  adminPin?: string
+  adminPin?: string,
+  voterHash: string = "local"
 ): Promise<{
   processed: number;
   rejected: number;
@@ -701,38 +692,34 @@ export async function recordEmpiricalMeasurements(
         ]
       );
       processed++;
-    } else if (item.type === "accuracy_confirm" && item.stationId) {
-      await db.run(
-        `
-        INSERT INTO empirical_observations (
-          obs_type, line_id, direction_id, segment_id, station_id,
-          day_type, time_band_id, duration_sec, baseline_at_obs_sec,
-          weather, observer_tag, notes, recorded_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-        [
-          "accuracy_confirm",
-          item.lineId,
-          item.directionId,
-          null,
-          item.stationId,
-          cdmx.dayType,
-          band.id,
-          0,
-          item.predictedEtaSec ?? null,
-          weather,
-          observerTag,
-          "on_time",
-          obsIso,
-        ]
-      );
-      processed++;
     } else if (
-      (item.type === "crowd_delay_minor" ||
+      (item.type === "accuracy_confirm" ||
+        item.type === "crowd_delay_minor" ||
         item.type === "crowd_delay_major") &&
       item.stationId
     ) {
-      const approxExtraSec = item.type === "crowd_delay_major" ? 720 : 240;
+      const voterKey = `ip:${voterHash}`;
+      const dedupWindowIso = new Date(obsMs - 15 * 60 * 1000).toISOString();
+
+      // Remove previous poll vote from the same IP on the same line within last 15 min so 1 person cannot stack multiple votes!
+      await db.run(
+        `
+        DELETE FROM empirical_observations
+        WHERE line_id = ?
+          AND notes = ?
+          AND obs_type IN ('accuracy_confirm', 'crowd_delay_minor', 'crowd_delay_major')
+          AND recorded_at >= ?
+      `,
+        [item.lineId, voterKey, dedupWindowIso]
+      );
+
+      const durVal =
+        item.type === "accuracy_confirm"
+          ? 0
+          : item.type === "crowd_delay_major"
+          ? 900
+          : 240;
+
       await db.run(
         `
         INSERT INTO empirical_observations (
@@ -749,11 +736,11 @@ export async function recordEmpiricalMeasurements(
           item.stationId,
           cdmx.dayType,
           band.id,
-          approxExtraSec,
+          durVal,
           item.predictedEtaSec ?? null,
           weather,
           observerTag,
-          item.type === "crowd_delay_major" ? "+10_15m" : "+3_5m",
+          voterKey,
           obsIso,
         ]
       );

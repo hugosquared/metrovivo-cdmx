@@ -767,7 +767,7 @@ export default function FieldTimerPanel({
                         </span>
                       ) : o.obs_type === "crowd_delay_major" ? (
                         <span className="text-red-300">
-                          Demora +10m ({o.observer_tag})
+                          Demora +15m ({o.observer_tag})
                         </span>
                       ) : (
                         <span className="text-zinc-300">
