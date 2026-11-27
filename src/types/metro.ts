@@ -169,12 +169,19 @@ export interface LiveSystemSnapshot {
 }
 
 export interface EmpiricalMeasurementInput {
-  type: "segment_run" | "station_dwell" | "platform_sighting";
+  type:
+    | "segment_run"
+    | "station_dwell"
+    | "platform_sighting"
+    | "accuracy_confirm"
+    | "crowd_delay_minor"
+    | "crowd_delay_major";
   lineId: LineId;
   directionId: 0 | 1;
   segmentId?: string;
   stationId?: string;
   durationSec?: number;
+  predictedEtaSec?: number;
   observedAtMs?: number;
   weather?: "dry" | "rain";
   observerTag?: string;

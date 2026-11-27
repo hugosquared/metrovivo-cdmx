@@ -757,6 +757,18 @@ export default function FieldTimerPanel({
                         <span className="text-sky-300">
                           Salida en vivo ({o.observer_tag})
                         </span>
+                      ) : o.obs_type === "accuracy_confirm" ? (
+                        <span className="text-emerald-300">
+                          A tiempo ({o.observer_tag})
+                        </span>
+                      ) : o.obs_type === "crowd_delay_minor" ? (
+                        <span className="text-amber-300">
+                          Demora 3-5m ({o.observer_tag})
+                        </span>
+                      ) : o.obs_type === "crowd_delay_major" ? (
+                        <span className="text-red-300">
+                          Demora +10m ({o.observer_tag})
+                        </span>
                       ) : (
                         <span className="text-zinc-300">
                           {o.from_name ?? o.segment_id} → {o.to_name ?? ""}

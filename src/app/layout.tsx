@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import GoogleAnalytics from "@/components/GoogleAnalytics";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -23,6 +24,7 @@ export default function RootLayout({
   return (
     <html lang="es" suppressHydrationWarning>
       <body className="antialiased" suppressHydrationWarning>
+        <GoogleAnalytics gaId={process.env.NEXT_PUBLIC_GA_ID ?? "G-VM30DCV687"} />
         {children}
       </body>
     </html>

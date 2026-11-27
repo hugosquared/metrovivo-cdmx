@@ -224,29 +224,59 @@ export async function buildLiveSystemSnapshot(
   for (const h of hwRows) headwayMap.set(h.line_id, Number(h.headway_sec));
 
   const cutoffIso = new Date(nowMs - 45 * 60 * 1000).toISOString();
-  const recentRatios = await db.all<{
-    line_id: string;
-    avg_ratio: number;
-    cnt: number;
-  }>(
-    `
-    SELECT line_id,
-           AVG(duration_sec / NULLIF(baseline_at_obs_sec, 0)) AS avg_ratio,
-           COUNT(*) AS cnt
-    FROM empirical_observations
-    WHERE obs_type = 'segment_run'
-      AND recorded_at >= ?
-      AND baseline_at_obs_sec > 0
-    GROUP BY line_id
-  `,
-    [cutoffIso]
-  );
+  const pollWindowIso = new Date(nowMs - 18 * 60 * 1000).toISOString();
+  const [recentRatios, recentPollVotes] = await Promise.all([
+    db.all<{
+      line_id: string;
+      avg_ratio: number;
+      cnt: number;
+    }>(
+      `
+      SELECT line_id,
+             AVG(duration_sec / NULLIF(baseline_at_obs_sec, 0)) AS avg_ratio,
+             COUNT(*) AS cnt
+      FROM empirical_observations
+      WHERE obs_type = 'segment_run'
+        AND recorded_at >= ?
+        AND baseline_at_obs_sec > 0
+      GROUP BY line_id
+    `,
+      [cutoffIso]
+    ),
+    db.all<{ line_id: string; obs_type: string; cnt: number }>(
+      `
+      SELECT line_id, obs_type, COUNT(*) AS cnt
+      FROM empirical_observations
+      WHERE obs_type IN ('accuracy_confirm', 'crowd_delay_minor', 'crowd_delay_major')
+        AND recorded_at >= ?
+      GROUP BY line_id, obs_type
+    `,
+      [pollWindowIso]
+    ),
+  ]);
 
   const slownessByLine = new Map<string, number>();
   for (const rr of recentRatios) {
     if (Number(rr.cnt) >= 1 && rr.avg_ratio) {
       slownessByLine.set(rr.line_id, Number(Number(rr.avg_ratio).toFixed(2)));
     }
+  }
+
+  const pollStatsByLine = new Map<
+    string,
+    { onTime: number; minor: number; major: number }
+  >();
+  for (const pv of recentPollVotes) {
+    const cur = pollStatsByLine.get(pv.line_id) ?? {
+      onTime: 0,
+      minor: 0,
+      major: 0,
+    };
+    const c = Number(pv.cnt);
+    if (pv.obs_type === "accuracy_confirm") cur.onTime += c;
+    else if (pv.obs_type === "crowd_delay_minor") cur.minor += c;
+    else if (pv.obs_type === "crowd_delay_major") cur.major += c;
+    pollStatsByLine.set(pv.line_id, cur);
   }
 
   const linesState = {} as Record<LineId, LineLiveState>;
@@ -276,20 +306,46 @@ export async function buildLiveSystemSnapshot(
       : Infinity;
     const isFreshOfficial = official.connected || statusAgeMs < 90 * 60 * 1000;
     const useLiveRow = isLiveNow && isFreshOfficial;
+    const poll = isLiveNow
+      ? pollStatsByLine.get(lid) ?? { onTime: 0, minor: 0, major: 0 }
+      : { onTime: 0, minor: 0, major: 0 };
 
-    const effectiveRegime: OperationalRegime = useLiveRow ? row.regime : "REGULAR";
+    let effectiveRegime: OperationalRegime = useLiveRow ? row.regime : "REGULAR";
+    let statusText = useLiveRow ? row.official_status_text : "Servicio Regular";
+    let speedMult = useLiveRow ? Number(row.speed_multiplier) : 1.0;
+    let dwellMult = useLiveRow ? Number(row.dwell_multiplier) : 1.0;
+    let headwayMult = useLiveRow ? Number(row.headway_multiplier) : 1.0;
+
+    if (effectiveRegime === "REGULAR") {
+      if (poll.major >= 3 && poll.major > poll.onTime) {
+        // Severe stoppage (+10-15 min) confirmed by >= 3 commuters
+        effectiveRegime = "DELAYED";
+        statusText = "Demora +10m (usuarios)";
+        speedMult = 1.5;
+        dwellMult = 1.4;
+        headwayMult = 1.35;
+      } else if (
+        poll.minor + poll.major * 2 >= 3 &&
+        poll.minor + poll.major >= poll.onTime
+      ) {
+        // Mild slowdown (+3-5 min): gentle amber adjustment, NOT red incident
+        effectiveRegime = "HIGH_CROWD";
+        statusText = "Demora ~3-5m (usuarios)";
+        speedMult = 1.18;
+        dwellMult = 1.2;
+        headwayMult = 1.15;
+      }
+    }
 
     linesState[lid] = {
       lineId: lid,
-      officialStatusText: useLiveRow
-        ? row.official_status_text
-        : "Servicio Regular",
+      officialStatusText: statusText,
       affectedStationsRaw: useLiveRow ? row.affected_stations_raw : "Ninguna",
       extraInfoRaw: useLiveRow ? row.extra_info_raw : "",
       regime: effectiveRegime,
-      speedMultiplier: useLiveRow ? Number(row.speed_multiplier) : 1.0,
-      dwellMultiplier: useLiveRow ? Number(row.dwell_multiplier) : 1.0,
-      headwayMultiplier: useLiveRow ? Number(row.headway_multiplier) : 1.0,
+      speedMultiplier: speedMult,
+      dwellMultiplier: dwellMult,
+      headwayMultiplier: headwayMult,
       empiricalSlownessRatio: empRatio,
       confidenceTier,
       headwaySec: headwayMap.get(lid) ?? 180,
@@ -621,6 +677,63 @@ export async function recordEmpiricalMeasurements(
           weather,
           observerTag,
           item.notes ?? null,
+          obsIso,
+        ]
+      );
+      processed++;
+    } else if (item.type === "accuracy_confirm" && item.stationId) {
+      await db.run(
+        `
+        INSERT INTO empirical_observations (
+          obs_type, line_id, direction_id, segment_id, station_id,
+          day_type, time_band_id, duration_sec, baseline_at_obs_sec,
+          weather, observer_tag, notes, recorded_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+        [
+          "accuracy_confirm",
+          item.lineId,
+          item.directionId,
+          null,
+          item.stationId,
+          cdmx.dayType,
+          band.id,
+          0,
+          item.predictedEtaSec ?? null,
+          weather,
+          observerTag,
+          "on_time",
+          obsIso,
+        ]
+      );
+      processed++;
+    } else if (
+      (item.type === "crowd_delay_minor" ||
+        item.type === "crowd_delay_major") &&
+      item.stationId
+    ) {
+      const approxExtraSec = item.type === "crowd_delay_major" ? 720 : 240;
+      await db.run(
+        `
+        INSERT INTO empirical_observations (
+          obs_type, line_id, direction_id, segment_id, station_id,
+          day_type, time_band_id, duration_sec, baseline_at_obs_sec,
+          weather, observer_tag, notes, recorded_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+        [
+          item.type,
+          item.lineId,
+          item.directionId,
+          null,
+          item.stationId,
+          cdmx.dayType,
+          band.id,
+          approxExtraSec,
+          item.predictedEtaSec ?? null,
+          weather,
+          observerTag,
+          item.type === "crowd_delay_major" ? "+10_15m" : "+3_5m",
           obsIso,
         ]
       );

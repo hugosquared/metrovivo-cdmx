@@ -78,6 +78,7 @@ export default function ScanCdmxApp() {
   const [followSelectedTrain, setFollowSelectedTrain] = useState<boolean>(false);
   const [selectedStation, setSelectedStation] =
     useState<SelectedStationInfo | null>(null);
+  const [pollDirId, setPollDirId] = useState<0 | 1>(0);
   const [phaseSnapFeedback, setPhaseSnapFeedback] = useState<string | null>(null);
 
   // Itinerary state
@@ -314,24 +315,48 @@ export default function ScanCdmxApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [network, snapshot, selectedStation, displayClock]);
 
-  const handleQuickStationPhaseSnap = async (dirId: 0 | 1) => {
+  const handleStationQuickPoll = async (
+    choice: "on_time" | "departed_now" | "delay_minor" | "delay_major"
+  ) => {
     if (!selectedStation) return;
+    const nextInDir = stationArrivals.find((a) => a.directionId === pollDirId);
+    const predEta = nextInDir ? nextInDir.etaSec : undefined;
+    const savedAlias =
+      typeof window !== "undefined"
+        ? window.localStorage.getItem("scancdmx_alias") ?? "anonimo"
+        : "anonimo";
+
+    const typeMap = {
+      on_time: "accuracy_confirm" as const,
+      departed_now: "platform_sighting" as const,
+      delay_minor: "crowd_delay_minor" as const,
+      delay_major: "crowd_delay_major" as const,
+    };
+
     const r = await submitOrQueueMeasurements([
       {
-        type: "platform_sighting",
+        type: typeMap[choice],
         lineId: selectedStation.lineId,
-        directionId: dirId,
+        directionId: pollDirId,
         stationId: selectedStation.station.stationId,
+        predictedEtaSec: predEta,
         observedAtMs: Date.now(),
+        observerTag: savedAlias,
       },
     ]);
+
+    const msgMap = {
+      on_time: "¡Gracias! Confirmaste que el paso va a tiempo.",
+      departed_now: `¡Listo! Tren sincronizado saliendo de ${selectedStation.station.name}.`,
+      delay_minor: `Registrada demora leve (~3-5 min) en Línea ${selectedStation.lineId}.`,
+      delay_major: `Registrada demora fuerte (+10 min) en Línea ${selectedStation.lineId}.`,
+    };
+
     setPhaseSnapFeedback(
-      r.synced
-        ? `¡Listo! Tren sincronizado saliendo de ${selectedStation.station.name} (Línea ${selectedStation.lineId}).`
-        : "Reporte guardado en cola offline."
+      r.synced ? msgMap[choice] : "Respuesta guardada en cola offline."
     );
     if (r.synced) fetchLiveSnapshot();
-    setTimeout(() => setPhaseSnapFeedback(null), 4000);
+    setTimeout(() => setPhaseSnapFeedback(null), 4500);
   };
 
   if (loadingError) {
@@ -647,6 +672,7 @@ export default function ScanCdmxApp() {
                       const st = snapshot?.lines[line.id];
                       const active = enabledLines.has(line.id);
                       const isRain = st?.regime === "RAIN_SLOW";
+                      const isMildCrowdOrDelay = st?.regime === "HIGH_CROWD";
                       const isBad =
                         st?.regime === "DELAYED" ||
                         st?.regime === "PARTIAL_CLOSURE" ||
@@ -720,7 +746,13 @@ export default function ScanCdmxApp() {
                               ) : isBad ? (
                                 <span className="inline-flex items-center gap-1 rounded-md bg-red-500/25 px-1.5 py-0.5 text-[10px] font-semibold text-red-300">
                                   <AlertTriangle className="h-3 w-3" />
-                                  Incidente
+                                  {st?.officialStatusText.includes("+10m")
+                                    ? "Demora +10m"
+                                    : "Incidente"}
+                                </span>
+                              ) : isMildCrowdOrDelay ? (
+                                <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300">
+                                  Demora ~3-5m
                                 </span>
                               ) : isSlowEmpirical ? (
                                 <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300">
@@ -1121,13 +1153,16 @@ export default function ScanCdmxApp() {
             )}
           </div>
 
-          {/* Instant Live Train Sighting Sync right from Station Popup */}
+          {/* 1-Click Station Accuracy & Live Sync Poll */}
           <div className="mt-3 border-t border-white/10 pt-2.5">
-            <div className="mb-1.5 flex items-center gap-1 text-[10px] text-sky-300">
-              <Radio className="h-3 w-3" />
-              <span>¿Ves salir un tren ahorita? Sincroniza el mapa:</span>
+            <div className="mb-1.5 flex items-center justify-between text-[10px]">
+              <span className="font-semibold text-sky-300">
+                ¿Tu metro pasó a la hora estimada?
+              </span>
             </div>
-            <div className="grid grid-cols-2 gap-1.5">
+
+            {/* Direction selector for quick poll */}
+            <div className="mb-2 grid grid-cols-2 gap-1 rounded-lg bg-zinc-900 p-0.5">
               {([0, 1] as const).map((d) => {
                 const ln = network.lines.find(
                   (l) => l.id === selectedStation.lineId
@@ -1137,14 +1172,50 @@ export default function ScanCdmxApp() {
                 return (
                   <button
                     key={d}
-                    onClick={() => handleQuickStationPhaseSnap(d)}
-                    className="truncate rounded-lg border border-sky-400/30 bg-sky-500/15 px-2 py-1.5 text-[10px] font-semibold text-sky-200 hover:bg-sky-500/25 active:scale-[0.98]"
+                    onClick={() => setPollDirId(d)}
+                    className={`truncate rounded-md px-1.5 py-1 text-[10px] font-medium transition ${
+                      pollDirId === d
+                        ? "bg-zinc-800 text-white shadow"
+                        : "text-zinc-500 hover:text-zinc-300"
+                    }`}
                   >
-                    Acaba de salir → {dir.headsign}
+                    → {dir.headsign}
                   </button>
                 );
               })}
             </div>
+
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                onClick={() => handleStationQuickPoll("on_time")}
+                className="rounded-lg border border-emerald-400/30 bg-emerald-500/15 px-2 py-1.5 text-[10px] font-semibold text-emerald-200 hover:bg-emerald-500/25 active:scale-[0.98]"
+                title="Confirmar que el tiempo estimado sí coincidió"
+              >
+                👍 A tiempo
+              </button>
+              <button
+                onClick={() => handleStationQuickPoll("departed_now")}
+                className="rounded-lg border border-sky-400/30 bg-sky-500/15 px-2 py-1.5 text-[10px] font-semibold text-sky-200 hover:bg-sky-500/25 active:scale-[0.98]"
+                title="Sincronizar que acaba de arrancar un tren ahorita"
+              >
+                ⏱ Salió ahorita
+              </button>
+              <button
+                onClick={() => handleStationQuickPoll("delay_minor")}
+                className="rounded-lg border border-amber-400/30 bg-amber-500/15 px-2 py-1.5 text-[10px] font-semibold text-amber-200 hover:bg-amber-500/25 active:scale-[0.98]"
+                title="Tarda unos 3 a 5 minutos más de lo normal"
+              >
+                🟡 +3–5 min
+              </button>
+              <button
+                onClick={() => handleStationQuickPoll("delay_major")}
+                className="rounded-lg border border-red-400/30 bg-red-500/15 px-2 py-1.5 text-[10px] font-semibold text-red-200 hover:bg-red-500/25 active:scale-[0.98]"
+                title="Línea detenida o tardando más de 10 minutos"
+              >
+                🔴 +10–15 min
+              </button>
+            </div>
+
             {phaseSnapFeedback && (
               <div className="mt-2 flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/15 p-2 text-[11px] font-medium text-emerald-200">
                 <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
